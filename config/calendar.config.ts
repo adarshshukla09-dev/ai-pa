@@ -20,9 +20,6 @@ export const calendar = google.calendar({
   auth: oauth2Client,
 });
 
-/**
- * Utility to test calendar connection and list upcoming events
- */
 export async function testCalendarConnection() {
   try {
     const response = await calendar.events.list({
