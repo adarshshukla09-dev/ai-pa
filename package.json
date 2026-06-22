@@ -1,0 +1,25 @@
+{
+  "name": "new-folder",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+  "tunnel": "lt --port 3000 --subdomain healbot-api-sandbox"
+},
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.18.0",
+    "body-parser": "^2.3.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "googleapis": "^173.0.0"
+  }
+}
