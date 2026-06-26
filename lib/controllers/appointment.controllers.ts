@@ -1,3 +1,4 @@
+
 import { Appointment, type AppointmentDocument } from "../db/models/appointment.model";
 
 const getErrorMessage = (error: unknown): string =>
@@ -13,47 +14,53 @@ const getDayRange = (date: Date) => {
   return { startOfDay, endOfDay };
 };
 
-export const createAppointment = async (
-  appointmentData: Partial<AppointmentDocument>
-): Promise<AppointmentDocument> => {
-  try {
-    const {
-      doctorId,
-      patientId,
-      date,
-      startTime,
-      endTime,
-    } = appointmentData;
+const addOneHour = (time: string): string => {
+  const [hour, minute] = time.split(":").map(Number);
 
-    if (
-      !doctorId ||
-      !patientId ||
-      !date ||
-      !startTime ||
-      !endTime
-    ) {
-      throw new Error("All appointment fields are required.");
+  const d = new Date();
+  d.setHours(hour as number , minute, 0, 0);
+  d.setHours(d.getHours() + 1);
+
+  return d.toTimeString().slice(0, 5);
+};
+
+interface CreateAppointmentInput {
+  doctorId: any;
+  patientId: any;
+  date: Date;
+  startTime: string;
+}
+
+export const createAppointment = async ({
+  doctorId,
+  patientId,
+  date,
+  startTime,
+}: CreateAppointmentInput): Promise<AppointmentDocument> => {
+  try {
+    if (!doctorId || !patientId || !date || !startTime) {
+      throw new Error("doctorId, patientId, date and startTime are required.");
     }
 
-    const { startOfDay, endOfDay } = getDayRange(new Date(date));
+    const endTime = addOneHour(startTime);
 
-    const conflictingAppointment = await Appointment.findOne({
+    const { startOfDay, endOfDay } = getDayRange(date);
+
+    const conflict = await Appointment.findOne({
       doctorId,
       date: {
         $gte: startOfDay,
         $lte: endOfDay,
       },
       status: {
-        $nin: ["cancelled"],
+        $ne: "cancelled",
       },
       startTime: { $lt: endTime },
       endTime: { $gt: startTime },
     });
 
-    if (conflictingAppointment) {
-      throw new Error(
-        "Doctor already has an appointment during this time slot."
-      );
+    if (conflict) {
+      throw new Error("This slot is already booked.");
     }
 
     return await Appointment.create({
@@ -62,14 +69,12 @@ export const createAppointment = async (
       date,
       startTime,
       endTime,
+      status: "confirmed",
     });
   } catch (error) {
-    throw new Error(
-      `Failed to create appointment: ${getErrorMessage(error)}`
-    );
+    throw new Error(`Failed to create appointment: ${getErrorMessage(error)}`);
   }
 };
-
 export const getAppointmentById = async (
   appointmentId: string
 ): Promise<AppointmentDocument> => {
@@ -210,3 +215,5 @@ export const getBookedAppointmentsForDoctor = async (
     );
   }
 };
+
+// createAppointment, getAppointmentById, getAppointmentsByDoctor, getAppointmentsByPatient, updateAppointmentStatus, confirmAppointment, cancelAppointment, completeAppointment, getBookedAppointmentsForDoctor

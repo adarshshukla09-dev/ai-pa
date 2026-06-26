@@ -71,3 +71,4 @@ export const deletePatient = async (patientId: string) => {
         throw error;
     }
 };
+// getPatientById,createPatient,updatePatient,deletePatient
