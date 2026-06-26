@@ -1,14 +1,39 @@
-import { Annotation, messagesStateReducer } from "@langchain/langgraph";
-import type { BaseMessage } from "langchain";
-type provider = "openai" | "chatgpt" | "google" | "gemini" | "groq";
+import { Annotation } from "@langchain/langgraph";
+import { BaseMessage } from "@langchain/core/messages";
+import type { DoctorDocument } from "../../lib/db/models/doctor.models";
+import { type PatientDocument } from "../../lib/db/models/patient.model";
 
-type mode = "creating" | "updating" | "deleting" | "reading";
-export const CalendarState = Annotation.Root({
-  provider: Annotation<provider>(),
-  model: Annotation<string>(),
-  apiKey: Annotation<string>(),
-  message: Annotation<BaseMessage[]>({
-    reducer: messagesStateReducer,
+export const AppointmentAgentState = Annotation.Root({
+  messages: Annotation<BaseMessage[]>({
+    reducer: (x, y) => x.concat(y),
     default: () => [],
   }),
+
+  doctor: Annotation<DoctorDocument>(),
+
+  patientPhoneNumber: Annotation<string>(),
+  doctorPhoneNumber: Annotation<string>(),
+
+  patientStatus: Annotation<"UNKNOWN" | "KNOWN" | "PENDING_REGISTRATION">(),
+  confirmationPending: Annotation<boolean>(),
+  patientData: Annotation<PatientDocument | undefined>(),
+
+  registrationData: Annotation<{
+    name?: string;
+    email?: string;
+    age?: number;
+    gender?: string;
+  }>({
+    reducer: (_, y) => y,
+    default: () => ({}),
+  }),
+
+  bookingIntent: Annotation<{
+    date: string;
+    start: string;
+    purpose: string;
+  }>({
+    reducer: (_, y) => y,
+  }),
 });
+export type AppointmentAgentStateType = typeof AppointmentAgentState.State;
