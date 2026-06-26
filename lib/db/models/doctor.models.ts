@@ -13,7 +13,7 @@ export interface IDoctor extends Document {
   // LLM Configuration
   llmProvider: 'openai' | 'groq' | 'gemini';
  llmModel: string;
-  
+  apiKey: string;
   // WhatsApp Credentials
   whatsappAccessToken: string;
   whatsappPhoneNumberId: string;
@@ -43,8 +43,7 @@ const doctorSchema: Schema = new Schema<IDoctor>(
     // LLM Setup
     llmProvider: { type: String, required: true, enum: ['openai', 'groq', 'gemini'] }, 
     llmModel: { type: String, required: true }, 
-    
-    // WhatsApp Business Cloud API Credentials
+    apiKey: { type: String, required: true }, 
     whatsappAccessToken: { type: String, required: true }, 
     whatsappPhoneNumberId: { type: String, required: true }, 
     whatsappBusinessAccountId: { type: String, required: true }, 
