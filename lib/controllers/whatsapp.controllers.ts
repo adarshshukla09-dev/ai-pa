@@ -1,9 +1,9 @@
 import type { Request, Response } from 'express';
 import { WhatsAppService } from '../whatsapp.config';
 import { Doctor } from '../db/models/doctor.models';
-import { appointmentAgent } from '../../agents/graphs/graph';
+import { appointmentAgent } from '../../agents/graphs/appointmentAgentGraph';
 import { HumanMessage } from '@langchain/core/messages';
-import type { AppointmentAgentStateType } from '../../agents/state/state';
+import type { AppointmentAgentStateType } from '../../agents/state/appointmentAgentState';
 import { Patient } from '../db/models/patient.model';
 
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'my_super_secret_handshake_123';

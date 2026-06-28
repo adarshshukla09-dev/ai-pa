@@ -19,4 +19,4 @@ const patientSchema: Schema = new Schema<IPatient>({
 }, { timestamps: true });
 
 export type PatientDocument = IPatient & Document;
-export const Patient = model("Patient", patientSchema);
+export const Patient = model<PatientDocument>("Patient", patientSchema);

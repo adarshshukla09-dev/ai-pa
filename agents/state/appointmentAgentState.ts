@@ -1,3 +1,4 @@
+// src/agents/state/appointmentAgentState.ts
 import { Annotation } from "@langchain/langgraph";
 import { BaseMessage } from "@langchain/core/messages";
 import type { DoctorDocument } from "../../lib/db/models/doctor.models";
@@ -15,6 +16,7 @@ export const AppointmentAgentState = Annotation.Root({
   doctorPhoneNumber: Annotation<string>(),
 
   patientStatus: Annotation<"UNKNOWN" | "KNOWN" | "PENDING_REGISTRATION">(),
+  patientId: Annotation<string | undefined>(), // 👈 ADD THIS LINE HERE
   confirmationPending: Annotation<boolean>(),
   patientData: Annotation<PatientDocument | undefined>(),
 
@@ -36,4 +38,5 @@ export const AppointmentAgentState = Annotation.Root({
     reducer: (_, y) => y,
   }),
 });
+
 export type AppointmentAgentStateType = typeof AppointmentAgentState.State;

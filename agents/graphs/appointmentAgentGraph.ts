@@ -8,12 +8,12 @@ import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb";
 import {
   AppointmentAgentState,
   type AppointmentAgentStateType,
-} from "../state/state";
+} from "../state/appointmentAgentState";
 import {
   verifyPatientNode,
   registerPatientNode,
   scheduleAppointmentNode,
-} from "../nodes/nodes";
+} from "../nodes/appointmentAgentNodes";
 import { nativeMongoClient } from "../../lib/db/mongo.config";
 
 

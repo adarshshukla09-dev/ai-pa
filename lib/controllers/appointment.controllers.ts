@@ -1,5 +1,8 @@
-
-import { Appointment, type AppointmentDocument } from "../db/models/appointment.model";
+import type { Types } from "mongoose";
+import {
+  Appointment,
+  type AppointmentDocument,
+} from "../db/models/appointment.model";
 
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -18,22 +21,29 @@ const addOneHour = (time: string): string => {
   const [hour, minute] = time.split(":").map(Number);
 
   const d = new Date();
-  d.setHours(hour as number , minute, 0, 0);
+  d.setHours(hour as number, minute, 0, 0);
   d.setHours(d.getHours() + 1);
 
   return d.toTimeString().slice(0, 5);
 };
 
 interface CreateAppointmentInput {
-  doctorId: any;
-  patientId: any;
+  doctorId: Types.ObjectId;
+  patientId: Types.ObjectId;
+
   date: Date;
   startTime: string;
-}
+  reason: string;
 
+  googleEventId?: string;
+  googleHangoutLink?: string;
+}
 export const createAppointment = async ({
   doctorId,
+  googleEventId,
+  googleHangoutLink,
   patientId,
+  reason,
   date,
   startTime,
 }: CreateAppointmentInput): Promise<AppointmentDocument> => {
@@ -69,6 +79,7 @@ export const createAppointment = async ({
       date,
       startTime,
       endTime,
+      reason,
       status: "confirmed",
     });
   } catch (error) {
@@ -76,7 +87,7 @@ export const createAppointment = async ({
   }
 };
 export const getAppointmentById = async (
-  appointmentId: string
+  appointmentId: string,
 ): Promise<AppointmentDocument> => {
   try {
     if (!appointmentId) {
@@ -91,49 +102,48 @@ export const getAppointmentById = async (
 
     return appointment;
   } catch (error) {
-    throw new Error(
-      `Failed to fetch appointment: ${getErrorMessage(error)}`
-    );
+    throw new Error(`Failed to fetch appointment: ${getErrorMessage(error)}`);
   }
 };
 
 export const getAppointmentsByDoctor = async (
-  doctorId: string
+  doctorId: string,
 ): Promise<AppointmentDocument[]> => {
   try {
     if (!doctorId) {
       throw new Error("Doctor ID is required.");
     }
 
-    return await Appointment.find({ doctorId })
-      .sort({ date: 1, startTime: 1 });
+    return await Appointment.find({ doctorId }).sort({ date: 1, startTime: 1 });
   } catch (error) {
     throw new Error(
-      `Failed to fetch doctor appointments: ${getErrorMessage(error)}`
+      `Failed to fetch doctor appointments: ${getErrorMessage(error)}`,
     );
   }
 };
 
 export const getAppointmentsByPatient = async (
-  patientId: string
+  patientId: string,
 ): Promise<AppointmentDocument[]> => {
   try {
     if (!patientId) {
       throw new Error("Patient ID is required.");
     }
 
-    return await Appointment.find({ patientId })
-      .sort({ date: 1, startTime: 1 });
+    return await Appointment.find({ patientId }).sort({
+      date: 1,
+      startTime: 1,
+    });
   } catch (error) {
     throw new Error(
-      `Failed to fetch patient appointments: ${getErrorMessage(error)}`
+      `Failed to fetch patient appointments: ${getErrorMessage(error)}`,
     );
   }
 };
 
 export const updateAppointmentStatus = async (
   appointmentId: string,
-  status: "pending" | "confirmed" | "cancelled" | "completed"
+  status: "pending" | "confirmed" | "cancelled" | "completed",
 ): Promise<AppointmentDocument> => {
   try {
     if (!appointmentId) {
@@ -146,7 +156,7 @@ export const updateAppointmentStatus = async (
       {
         new: true,
         runValidators: true,
-      }
+      },
     );
 
     if (!appointment) {
@@ -156,41 +166,32 @@ export const updateAppointmentStatus = async (
     return appointment;
   } catch (error) {
     throw new Error(
-      `Failed to update appointment status: ${getErrorMessage(error)}`
+      `Failed to update appointment status: ${getErrorMessage(error)}`,
     );
   }
 };
 
 export const confirmAppointment = async (
-  appointmentId: string
+  appointmentId: string,
 ): Promise<AppointmentDocument> => {
-  return updateAppointmentStatus(
-    appointmentId,
-    "confirmed"
-  );
+  return updateAppointmentStatus(appointmentId, "confirmed");
 };
 
 export const cancelAppointment = async (
-  appointmentId: string
+  appointmentId: string,
 ): Promise<AppointmentDocument> => {
-  return updateAppointmentStatus(
-    appointmentId,
-    "cancelled"
-  );
+  return updateAppointmentStatus(appointmentId, "cancelled");
 };
 
 export const completeAppointment = async (
-  appointmentId: string
+  appointmentId: string,
 ): Promise<AppointmentDocument> => {
-  return updateAppointmentStatus(
-    appointmentId,
-    "completed"
-  );
+  return updateAppointmentStatus(appointmentId, "completed");
 };
 
 export const getBookedAppointmentsForDoctor = async (
   doctorId: string,
-  date: Date
+  date: Date,
 ): Promise<AppointmentDocument[]> => {
   try {
     if (!doctorId) {
@@ -211,7 +212,7 @@ export const getBookedAppointmentsForDoctor = async (
     }).sort({ startTime: 1 });
   } catch (error) {
     throw new Error(
-      `Failed to fetch booked appointments: ${getErrorMessage(error)}`
+      `Failed to fetch booked appointments: ${getErrorMessage(error)}`,
     );
   }
 };
