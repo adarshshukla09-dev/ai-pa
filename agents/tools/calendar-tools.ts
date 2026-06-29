@@ -1,290 +1,255 @@
 import { tool } from "ai";
 import z from "zod";
 import { google } from "googleapis";
+import { Types } from "mongoose";
 import { Doctor, type DoctorDocument } from "../../lib/db/models/doctor.models";
 import { createAppointment } from "../../lib/controllers/appointment.controllers";
-import type { AppointmentAgentStateType } from "../state/state";
 import { Appointment } from "../../lib/db/models/appointment.model";
 
-// --- Vercel AI SDK Zod Input Schemas ---
+const TZ_DEFAULT = "UTC";
+
+// --- Schemas ---
 const calendarEventSchema = z.object({
-  summary: z
-    .string()
-    .describe("The purpose or title of the medical appointment."),
-  description: z
-    .string()
-    .optional()
-    .describe("Optional patient details or symptoms."),
-  start: z.object({
-    dateTime: z.string().describe("ISO 8601 string format start time"),
-    timeZone: z.string().optional().default("UTC"),
-  }),
-  end: z.object({
-    dateTime: z.string().describe("ISO 8601 string format end time"),
-    timeZone: z.string().optional().default("UTC"),
-  }),
+  summary: z.string().describe("Short appointment title."),
+  patientId: z.string().describe("MongoDB Patient _id."),
+  description: z.string().optional().describe("Appointment reason or symptoms summary."),
+  start: z.object({ dateTime: z.string(), timeZone: z.string().optional().default(TZ_DEFAULT) }),
+  end: z.object({ dateTime: z.string(), timeZone: z.string().optional().default(TZ_DEFAULT) }),
 });
 
-function addMinutes(date: Date, minutes: number) {
-  return new Date(date.getTime() + minutes * 60000);
-}
-export function createCalendarTools(state: AppointmentAgentStateType) {
-  const doctor:DoctorDocument =state.doctor
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-  );
-  oauth2Client.setCredentials({
-    access_token: doctor.googleAccessToken,
-    refresh_token: doctor.googleRefreshToken,
-  });
-  oauth2Client.on("tokens", async (tokens) => {
-    if (!tokens.access_token) return;
-    console.log(`🔄 Refreshing token for ${doctor.name}`);
-    doctor.googleAccessToken = tokens.access_token;
-    oauth2Client.setCredentials({
-      access_token: tokens.access_token,
-      refresh_token: doctor.googleRefreshToken,
-    });
-    await Doctor.findByIdAndUpdate(doctor._id, {
-      $set: { googleAccessToken: tokens.access_token },
-    });
-  });
-   const calendarClient = google.calendar({ version: "v3", auth: oauth2Client });
-  const googleCalendarId = doctor.googleCalendarId;
-  return {
-  bookAppointment: tool({
-      description: "Create a Google Calendar appointment and also save it in appointment of mongodb collection named appointment.",
-      inputSchema: calendarEventSchema,
-      execute: async ({ summary, description, start, end }) => {
-        let calendarEventId: string | null | undefined = null;
+const appointmentIdSchema = z.object({
+  appointmentId: z.string().describe("MongoDB Appointment _id."),
+});
 
+// --- Utility Helpers ---
+const addMinutes = (date: Date, min: number) => new Date(date.getTime() + min * 60000);
+const toTimeString = (date: Date) => date.toTimeString().slice(0, 5);
+
+function getDayRange(date: Date) {
+  const startOfDay = new Date(date).setHours(0, 0, 0, 0);
+  const endOfDay = new Date(date).setHours(23, 59, 59, 999);
+  return { startOfDay: new Date(startOfDay), endOfDay: new Date(endOfDay) };
+}
+
+function validateObjectId(id: string) {
+  if (!Types.ObjectId.isValid(id)) throw new Error("Invalid ID format.");
+  return new Types.ObjectId(id);
+}
+
+function normalizeAppointment(app: any) {
+  return {
+    id: app._id?.toString(),
+    doctorId: app.doctorId?.toString(),
+    patientId: app.patientId?.toString(),
+    date: app.date,
+    startTime: app.startTime,
+    endTime: app.endTime,
+    reason: app.reason,
+    status: app.status,
+    googleEventId: app.googleEventId,
+    googleHangoutLink: app.googleHangoutLink,
+  };
+}
+
+async function findMongoConflict(doctorId: Types.ObjectId, startDate: Date, endDate: Date, ignoreId?: string) {
+  const { startOfDay, endOfDay } = getDayRange(startDate);
+  const query: Record<string, any> = {
+    doctorId,
+    date: { $gte: startOfDay, $lte: endOfDay },
+    status: { $ne: "cancelled" },
+    startTime: { $lt: toTimeString(endDate) },
+    endTime: { $gt: toTimeString(startDate) },
+  };
+  if (ignoreId && Types.ObjectId.isValid(ignoreId)) {
+    query._id = { $ne: new Types.ObjectId(ignoreId) };
+  }
+  return Appointment.findOne(query).lean();
+}
+
+// Wrapper to eliminate try/catch repetition
+export const withErrorHandler = (fn: (input: any) => Promise<any>) => async (input: any) => {
+  try {
+    return await fn(input);
+  } catch (err: any) {
+    return { success: false, available: false, error: err.message, alternatives: [] };
+  }
+};
+
+// --- Core Export ---
+export function createCalendarTools(doctor: DoctorDocument) {
+  const oauth2Client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);
+  oauth2Client.setCredentials({ access_token: doctor.googleAccessToken, refresh_token: doctor.googleRefreshToken });
+
+  oauth2Client.on("tokens", async ({ access_token }) => {
+    if (!access_token) return;
+    doctor.googleAccessToken = access_token;
+    await Doctor.findByIdAndUpdate(doctor._id, { $set: { googleAccessToken: access_token } });
+  });
+
+  const calendarClient = google.calendar({ version: "v3", auth: oauth2Client });
+  const calendarId = doctor.googleCalendarId;
+
+  return Object.freeze({
+    getPatientAppointments: tool({
+      description: "Read the patient's appointment records from MongoDB.",
+      inputSchema: z.object({ patientId: z.string(), includeCancelled: z.boolean().optional().default(false) }),
+      execute: withErrorHandler(async ({ patientId, includeCancelled }) => {
+        const pId = validateObjectId(patientId);
+        const query: Record<string, any> = { patientId: pId, doctorId: doctor._id };
+        if (!includeCancelled) query.status = { $ne: "cancelled" };
+
+        const appointments = await Appointment.find(query).sort({ date: 1, startTime: 1 }).lean();
+        return { success: true, source: "mongodb", count: appointments.length, appointments: appointments.map(normalizeAppointment) };
+      }),
+    }),
+
+    checkAvailability: tool({
+      description: "Check MongoDB and Google Calendar before booking or rescheduling.",
+      inputSchema: z.object({
+        start: z.string(),
+        duration: z.number().default(doctor.slotDurationInMinutes ?? 60),
+        appointmentIdToIgnore: z.string().optional(),
+      }),
+      execute: withErrorHandler(async ({ start, duration, appointmentIdToIgnore }) => {
+        const startDate = new Date(start);
+        const endDate = addMinutes(startDate, duration);
+
+        const ignoredApp = appointmentIdToIgnore && Types.ObjectId.isValid(appointmentIdToIgnore)
+          ? await Appointment.findOne({ _id: new Types.ObjectId(appointmentIdToIgnore), doctorId: doctor._id }).lean()
+          : null;
+
+        const mongoConflict = await findMongoConflict(doctor._id, startDate, endDate, appointmentIdToIgnore);
+        const calRes = await calendarClient.events.list({
+          calendarId,
+          timeMin: startDate.toISOString(),
+          timeMax: endDate.toISOString(),
+          singleEvents: true,
+        });
+
+        const items = calRes.data.items ?? [];
+        const calConflict = ignoredApp?.googleEventId ? items.find((i) => i.id && i.id !== ignoredApp.googleEventId) : items[0];
+
+        if (mongoConflict || calConflict) {
+          return {
+            available: false,
+            source: "mongodb+calendar",
+            reason: "This slot is already booked.",
+            mongoConflict: mongoConflict ? normalizeAppointment(mongoConflict) : undefined,
+            calendarConflictId: calConflict?.id,
+            alternatives: [],
+          };
+        }
+        return { available: true, source: "mongodb+calendar", alternatives: [] };
+      }),
+    }),
+
+    bookAppointment: tool({
+      description: "Create an appointment in Google Calendar and MongoDB with rollback capability.",
+      inputSchema: calendarEventSchema,
+      execute: withErrorHandler(async ({ summary, description, start, end, patientId }) => {
+        const pId = validateObjectId(patientId);
+        const startDate = new Date(start.dateTime);
+        const endDate = new Date(end.dateTime);
+
+        const mongoConflict = await findMongoConflict(doctor._id, startDate, endDate);
+        if (mongoConflict) {
+          return { success: false, error: "Slot already booked in MongoDB.", appointment: normalizeAppointment(mongoConflict) };
+        }
+
+        let createdEventId: string | undefined;
         try {
-          // 1. Insert into Google Calendar
-          const response = await calendarClient.events.insert({
-            calendarId: googleCalendarId,
+          const calRes = await calendarClient.events.insert({
+            calendarId,
+            conferenceDataVersion: 1,
             requestBody: {
               summary,
               description,
-              start: { dateTime: start.dateTime, timeZone: start.timeZone },
-              end: { dateTime: end.dateTime, timeZone: end.timeZone },
+              start,
+              end,
+              conferenceData: { createRequest: { requestId: `${Date.now()}-${patientId}` } },
             },
           });
 
-          // Capture event ID immediately for the rollback mechanism
-          calendarEventId = response.data.id;
+          createdEventId = calRes.data.id ?? undefined;
+          if (!createdEventId) throw new Error("Google Calendar failed to return an event id.");
 
-          // 2. Parse date strings out of start.dateTime 
-          const appointmentDate = new Date(start.dateTime);
-          const startTimeStr = appointmentDate.toTimeString().slice(0, 5);
-
-          // 3. Persist back to MongoDB
           const appointment = await createAppointment({
-            doctorId: state.doctor._id,
-            patientId: state.patientData!._id,
-            date: appointmentDate,
-            startTime: startTimeStr,
+            doctorId: doctor._id,
+            patientId: pId,
+            reason: description ?? summary,
+            date: startDate,
+            startTime: toTimeString(startDate),
+            endTime: toTimeString(endDate),
+            googleEventId: createdEventId,
+            googleHangoutLink: calRes.data.hangoutLink ?? undefined,
           });
 
-          return {
-            success: true,
-            calendarEvent: response.data,
-            dbAppointment: appointment,
-          };
-        } catch (err: any) {
-          console.error("❌ Booking transaction failed:", err.message || err);
-
-          // 4. Automated Rollback Transaction if Google Event was successfully tracked
-          if (calendarEventId) {
-            try {
-              await calendarClient.events.delete({
-                calendarId: googleCalendarId,
-                eventId: calendarEventId,
-              });
-              console.log(`🔄 Successfully rolled back calendar event slot: ${calendarEventId}`);
-            } catch (deleteErr) {
-              console.error("⚠️ Fail-safe warning: Failed to remove dangling Google Calendar event:", deleteErr);
-            }
-          }
-
-          return {
-            success: false,
-            error: err.message,
-          };
+          return { success: true, source: "mongodb+calendar", appointment: normalizeAppointment(appointment) };
+        } catch (err) {
+          if (createdEventId) await calendarClient.events.delete({ calendarId, eventId: createdEventId }).catch(() => null);
+          throw err;
         }
-      }, // 👈 Properly closing execute block
-    }),
-    checkAvailability: tool({
-      description: "Checks whether a requested appointment slot is available across both MongoDB and Google Calendar, and returns alternative slots if busy.",
-      inputSchema: z.object({
-        start: z.string().describe("ISO string format start time"),
-        duration: z.number().default(60).describe("Duration of slot in minutes"),
       }),
-      execute: async ({ start, duration }) => {
-        try {
-          const startDate = new Date(start);
-          const endDate = addMinutes(startDate, duration);
-
-          const startTimeStr = startDate.toTimeString().slice(0, 5); // "HH:MM"
-          const endTimeStr = endDate.toTimeString().slice(0, 5);     // "HH:MM"
-
-          // 1. Setup Day Boundaries for MongoDB query
-          const startOfDay = new Date(startDate);
-          startOfDay.setHours(0, 0, 0, 0);
-          const endOfDay = new Date(startDate);
-          endOfDay.setHours(23, 59, 59, 999);
-
-          // 2. Query MongoDB for overlapping active appointments
-          const mongoConflict = await Appointment.findOne({
-            doctorId: state.doctor._id,
-            date: { $gte: startOfDay, $lte: endOfDay },
-            status: { $ne: "cancelled" },
-            startTime: { $lt: endTimeStr },
-            endTime: { $gt: startTimeStr },
-          });
-
-          // 3. Query Google Calendar for overlapping events
-          const calendarResponse = await calendarClient.events.list({
-            calendarId: googleCalendarId,
-            timeMin: startDate.toISOString(),
-            timeMax: endDate.toISOString(),
-            singleEvents: true,
-          });
-          const googleEvents = calendarResponse.data.items ?? [];
-
-          // If either source registers an event block, the slot is unavailable
-          if (mongoConflict || googleEvents.length > 0) {
-            console.log("⚠️ Conflict detected. Checking alternative slots...");
-            
-            const alternatives: string[] = [];
-            let candidateStart = endDate;
-
-            // 4. Generate 3 rolling alternative slots checking both sources sequentially
-            while (alternatives.length < 3) {
-              const candidateEnd = addMinutes(candidateStart, duration);
-              const cStartStr = candidateStart.toTimeString().slice(0, 5);
-              const cEndStr = candidateEnd.toTimeString().slice(0, 5);
-
-              const cStartOfDay = new Date(candidateStart);
-              cStartOfDay.setHours(0, 0, 0, 0);
-              const cEndOfDay = new Date(candidateStart);
-              cEndOfDay.setHours(23, 59, 59, 999);
-
-              // Check DB conflict for alternative candidate
-              const dbAltConflict = await Appointment.findOne({
-                doctorId: state.doctor._id,
-                date: { $gte: cStartOfDay, $lte: cEndOfDay },
-                status: { $ne: "cancelled" },
-                startTime: { $lt: cEndStr },
-                endTime: { $gt: cStartStr },
-              });
-
-              if (!dbAltConflict) {
-                // Check Google Calendar conflict for alternative candidate
-                const calAltRes = await calendarClient.events.list({
-                  calendarId: googleCalendarId,
-                  timeMin: candidateStart.toISOString(),
-                  timeMax: candidateEnd.toISOString(),
-                  singleEvents: true,
-                });
-
-                if ((calAltRes.data.items ?? []).length === 0) {
-                  alternatives.push(candidateStart.toISOString());
-                }
-              }
-
-              // Move window forward
-              candidateStart = addMinutes(candidateStart, duration);
-            }
-
-            return { 
-              available: false, 
-              reason: mongoConflict ? "Booked in local database" : "Booked on Google Calendar",
-              alternatives 
-            };
-          }
-
-          // If completely clear on both ends
-          return { available: true, alternatives: [] };
-        } catch (err: any) {
-  console.error("❌ checkAvailability failed");
-  console.error(err);
-  console.error(err?.stack);
-
-  return {
-    available: false,
-    error: String(err),
-    alternatives: [],
-  };
-}
-      },
     }),
-    getCalendarEventById: tool({
-      description: "Fetch a calendar event by ID.",
-      inputSchema: z.object({ eventId: z.string() }),
-      execute: async ({ eventId }) => {
-        try {
-          const response = await calendarClient.events.get({
-            calendarId: googleCalendarId,
-            eventId,
-          });
-          return response.data;
-        } catch (err: any) {
-          console.error(err);
-          return { success: false, error: err.message };
+
+    updateAppointment: tool({
+      description: "Reschedule an existing appointment across Calendar and MongoDB with rollback mechanism.",
+      inputSchema: appointmentIdSchema.extend({
+        summary: z.string().optional(),
+        description: z.string().optional(),
+        start: z.object({ dateTime: z.string(), timeZone: z.string().optional().default(TZ_DEFAULT) }),
+        end: z.object({ dateTime: z.string(), timeZone: z.string().optional().default(TZ_DEFAULT) }),
+      }),
+      execute: withErrorHandler(async ({ appointmentId, summary, description, start, end }) => {
+        const appId = validateObjectId(appointmentId);
+        const appointment = await Appointment.findOne({ _id: appId, doctorId: doctor._id, status: { $ne: "cancelled" } });
+
+        if (!appointment?.googleEventId) throw new Error("Appointment not found or missing Google Event link.");
+
+        const startDate = new Date(start.dateTime);
+        const endDate = new Date(end.dateTime);
+        const mongoConflict = await findMongoConflict(doctor._id, startDate, endDate, appointmentId);
+        if (mongoConflict) {
+          return { success: false, error: "New slot is already booked.", appointment: normalizeAppointment(mongoConflict) };
         }
-      },
-    }),
-    updateCalendarEvent: tool({
-      description: "Update an existing calendar event.",
-      inputSchema: calendarEventSchema
-        .partial()
-        .extend({ eventId: z.string() }),
-      execute: async ({ eventId, ...updatedData }) => {
+
+        const oldEvent = await calendarClient.events.get({ calendarId, eventId: appointment.googleEventId });
+        await calendarClient.events.patch({
+          calendarId,
+          eventId: appointment.googleEventId,
+          requestBody: { ...(summary && { summary }), ...(description && { description }), start, end },
+        });
+
         try {
-          const response = await calendarClient.events.patch({
-            calendarId: googleCalendarId,
-            eventId,
-            requestBody: {
-              summary: updatedData.summary,
-              description: updatedData.description,
-              ...(updatedData.start && { start: updatedData.start }),
-              ...(updatedData.end && { end: updatedData.end }),
-            },
-          });
-          return response.data;
-        } catch (err: any) {
-          console.error(err);
-          return { success: false, error: err.message };
+          appointment.date = startDate;
+          appointment.startTime = toTimeString(startDate);
+          appointment.endTime = toTimeString(endDate);
+          if (description) appointment.reason = description;
+          await appointment.save();
+        } catch (mongoError) {
+          await calendarClient.events.update({ calendarId, eventId: appointment.googleEventId, requestBody: oldEvent.data });
+          throw mongoError;
         }
-      },
+
+        return { success: true, source: "mongodb+calendar", appointment: normalizeAppointment(appointment) };
+      }),
     }),
-    deleteCalendarEvent: tool({
-      description:
-        "Cancel or remove a calendar appointment using its event ID.",
-      inputSchema: z.object({ eventId: z.string() }),
-      execute: async ({ eventId }) => {
-        try {
-          await calendarClient.events.delete({
-            calendarId: googleCalendarId,
-            eventId,
-          });
-          return {
-            success: true,
-            message: `Appointment ${eventId} cancelled successfully.`,
-          };
-        } catch (err: any) {
-          console.error(
-            `❌ Error deleting calendar event (${eventId}):`,
-            err.message || err,
-          );
-          return {
-            success: false,
-            error: "Failed to cancel the appointment slot.",
-            details: err.message,
-          };
-        }
-      },
+
+    cancelAppointment: tool({
+      description: "Cancel an appointment in Google Calendar and then mark it cancelled in MongoDB.",
+      inputSchema: appointmentIdSchema,
+      execute: withErrorHandler(async ({ appointmentId }) => {
+        const appId = validateObjectId(appointmentId);
+        const appointment = await Appointment.findOne({ _id: appId, doctorId: doctor._id, status: { $ne: "cancelled" } });
+
+        if (!appointment?.googleEventId) throw new Error("Active appointment not found.");
+
+        await calendarClient.events.delete({ calendarId, eventId: appointment.googleEventId });
+        appointment.status = "cancelled";
+        await appointment.save();
+
+        return { success: true, source: "mongodb+calendar", appointment: normalizeAppointment(appointment), message: "Cancelled successfully." };
+      }),
     }),
-  };
+  });
 }

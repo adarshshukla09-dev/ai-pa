@@ -12,31 +12,46 @@ import {
 import {
   verifyPatientNode,
   registerPatientNode,
-  scheduleAppointmentNode,
+  analyzeIntentNode,
+  bookAppointmentNode,
+  cancelAppointmentNode,
+  rescheduleAppointmentNode,
+  queryAppointmentNode,
 } from "../nodes/appointmentAgentNodes";
 import { nativeMongoClient } from "../../lib/db/mongo.config";
 
-
-
-
 function routeAfterVerify(state: AppointmentAgentStateType) {
   if (state.patientStatus === "KNOWN") {
-    return "scheduleAppointmentNode";
+    return "analyzeIntentNode";
   }
-
   return "registerPatientNode";
 }
+
 function routeAfterRegistration(state: AppointmentAgentStateType) {
   if (state.patientStatus === "KNOWN") {
-    return "scheduleAppointmentNode";
+    return "analyzeIntentNode";
   }
-
   return END;
 }
+
+function routeAfterIntentAnalysis(state: AppointmentAgentStateType) {
+  switch (state.appointmentIntent) {
+    case "book": return "bookAppointmentNode";
+    case "cancel": return "cancelAppointmentNode";
+    case "reschedule": return "rescheduleAppointmentNode";
+    case "query":
+    default: return "queryAppointmentNode";
+  }
+}
+
 const workflow = new StateGraph(AppointmentAgentState)
   .addNode("verifyPatientNode", verifyPatientNode)
   .addNode("registerPatientNode", registerPatientNode)
-  .addNode("scheduleAppointmentNode", scheduleAppointmentNode)
+  .addNode("analyzeIntentNode", analyzeIntentNode)
+  .addNode("bookAppointmentNode", bookAppointmentNode)
+  .addNode("cancelAppointmentNode", cancelAppointmentNode)
+  .addNode("rescheduleAppointmentNode", rescheduleAppointmentNode)
+  .addNode("queryAppointmentNode", queryAppointmentNode)
 
   .addEdge(START, "verifyPatientNode")
 
@@ -44,7 +59,7 @@ const workflow = new StateGraph(AppointmentAgentState)
     "verifyPatientNode",
     routeAfterVerify,
     {
-      scheduleAppointmentNode: "scheduleAppointmentNode",
+      analyzeIntentNode: "analyzeIntentNode",
       registerPatientNode: "registerPatientNode",
     }
   )
@@ -53,12 +68,26 @@ const workflow = new StateGraph(AppointmentAgentState)
     "registerPatientNode",
     routeAfterRegistration,
     {
-      scheduleAppointmentNode: "scheduleAppointmentNode",
+      analyzeIntentNode: "analyzeIntentNode",
       [END]: END,
     }
   )
 
-  .addEdge("scheduleAppointmentNode", END);
+  .addConditionalEdges(
+    "analyzeIntentNode",
+    routeAfterIntentAnalysis,
+    {
+      bookAppointmentNode: "bookAppointmentNode",
+      cancelAppointmentNode: "cancelAppointmentNode",
+      rescheduleAppointmentNode: "rescheduleAppointmentNode",
+      queryAppointmentNode: "queryAppointmentNode",
+    }
+  )
+
+  .addEdge("bookAppointmentNode", END)
+  .addEdge("cancelAppointmentNode", END)
+  .addEdge("rescheduleAppointmentNode", END)
+  .addEdge("queryAppointmentNode", END);
 export let appointmentAgent: CompiledStateGraph<any, any, any>;
 
 export async function initAppointmentAgent() {

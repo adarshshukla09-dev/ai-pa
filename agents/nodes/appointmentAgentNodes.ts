@@ -1,144 +1,251 @@
-// src/agents/nodes/appointmentNodes.ts
-import { AIMessage, BaseMessage } from "@langchain/core/messages";
-import { generateText, isStepCount, Output } from "ai";
+import { AIMessage } from "@langchain/core/messages";
+import { generateText, Output, convertToModelMessages, isStepCount } from "ai";
 import type { AppointmentAgentStateType } from "../state/appointmentAgentState";
 import { Patient } from "../../lib/db/models/patient.model";
-import { getSystemPrompt } from "../prompts/SYSTEM_PROMPT";
 import { llmConfig } from "../llm/llm.config";
 import z from "zod";
-import { getRegisterPrompt, getSchedulingPrompt } from "../prompts/appointmentPrompt";
-
+import { getSystemPrompt } from "../prompts/SYSTEM_PROMPT";
+// --- Node 1: Verify Patient ---
 export async function verifyPatientNode(state: AppointmentAgentStateType) {
   try {
     const existingPatient = await Patient.findOne({
       phoneNumber: state.patientPhoneNumber,
     });
-
     if (existingPatient) {
       return {
         patientStatus: "KNOWN" as const,
-        patientId: existingPatient._id.toString(), // 👈 Explicitly cast MongoDB ObjectIDs to safe strings
+        patientId: existingPatient._id.toString(),
         patientData: existingPatient,
       };
     }
-
-    return {
-      patientStatus: "UNKNOWN" as const,
-    };
+    return { patientStatus: "UNKNOWN" as const };
   } catch (error) {
     console.error("Error in verifyPatientNode:", error);
     return { patientStatus: "UNKNOWN" as const };
   }
 }
 
-export async function registerPatientNode(
-  state: AppointmentAgentStateType,
-): Promise<Partial<AppointmentAgentStateType>> {
-  
-  // Safe history string generation checking for both runtime classes and raw DB JSON rows
-  const historyText = state.messages
-    .slice(-4)
-    .map(m => {
-      const type = typeof m._getType === 'function' ? m._getType() : ((m as any).type || 'human');
-      return `${type}: ${m.content}`;
-    })
-    .join("\n");
+// --- Node 2: Register Patient (Fixed Logic & Tool Execution Loops) ---
+export async function registerPatientNode(state: AppointmentAgentStateType) {
+  try {
+    const modelConfig = await llmConfig(state.doctor);
 
-  const prompt = getRegisterPrompt({ state, historyText });
-  const model = await llmConfig(state.doctor, 'registration');
-  
-  const patientSchema = z.object({
-    name: z.string().min(1),
-    phoneNumber: z.string().min(1),
-    email: z.string().email().optional(),
-    age: z.number().int().positive().optional(),
-    gender: z.string().optional(),
-  });
+    const prompt = `You are onboarding a new patient. Collect their name. 
+    Current gathered data: ${JSON.stringify(state.registrationData || {})}
+    If you have enough information (Name & Phone), call the "createPatient" tool.
+    Otherwise, ask the user politely for their missing details.
+    
+    Latest user message: ${state.messages[state.messages.length - 1]?.content}`;
 
-  const response = await generateText({
-    model: model.m,
-    system: getSystemPrompt(),
-    prompt,
-    tools: model.tools,
-    output: Output.object({ schema: patientSchema }),
-    stopWhen: isStepCount(2), 
-  });
+    const response = await generateText({
+      model: modelConfig.m,
+      system: getSystemPrompt(),
+      prompt,
+      tools: {
+        createPatient: modelConfig.tools.createPatient,
+      },
+      stopWhen: isStepCount(3),
+    });
 
-  const replyText = response.text?.trim() || "Processing your registration.";
-
-  const patient = await Patient.findOne({ phoneNumber: state.patientPhoneNumber });
-  if (patient) {
-    return {
-      patientStatus: "KNOWN",
-      patientId: patient._id.toString(), // 👈 Sync tracking here during active fallback matches
-      patientData: patient,
-      messages: [new AIMessage(replyText)],
-    };
-  }
-
-  return {
-    patientStatus: "UNKNOWN",
-    patientData: undefined,
-    messages: [new AIMessage(replyText)],
-  };
-}
-
-export async function scheduleAppointmentNode(
-  state: AppointmentAgentStateType,
-): Promise<Partial<AppointmentAgentStateType>> {
-  
-  const historyText = state.messages
-    .slice(-4)
-    .map(m => {
-      const type = typeof m._getType === "function" ? m._getType() : ((m as any).type || "human");
-      return `${type}: ${m.content}`;
-    })
-    .join("\n");
-
-  const prompt = getSchedulingPrompt({ state, historyText });
-  const model = await llmConfig(state.doctor, "scheduling");
-
-  const response = await generateText({
-    model: model.m,
-    prompt,
-    tools: model.tools,
-    system: getSystemPrompt(),
-    stopWhen: isStepCount(2), 
-  });
-
-  const newMessages: BaseMessage[] = [];
-
-  // Check if a tool was executed during this turn
- // Inside scheduleAppointmentNode...
-if (response.toolResults && response.toolResults.length > 0) {
-  for (const toolResult of response.toolResults) {
-    // ✅ Check if it's the right tool and safely verify the result property exists
-    if (
-      toolResult.toolName === "bookAppointment" && 
-      "result" in toolResult && 
-      (toolResult.result as any)?.success
-    ) {
-      const bookingData = toolResult.result as any;
-      const appt = bookingData.appointment;
-      
-      const successMessage = `🎉 **Appointment Confirmed!** I have booked your *normal visit* for **${state.bookingIntent?.date || "today"} at 3:00 pm UTC**. Your booking ID is \`${appt?._id || "Verified"}\`. See you then!`;
-      
-      newMessages.push(new AIMessage(successMessage));
-      
+    // Re-verify if registration occurred during tool execution loop
+    const patient = await Patient.findOne({
+      phoneNumber: state.patientPhoneNumber,
+    });
+    if (patient) {
       return {
-        messages: newMessages,
-        confirmationPending: false,
+        patientStatus: "KNOWN" as const,
+        patientId: patient._id.toString(),
+        patientData: patient,
+        messages: [new AIMessage(response.text || "Registration complete!")],
       };
     }
+
+    return {
+      patientStatus: "UNKNOWN" as const,
+      messages: [
+        new AIMessage(
+          response.text ||
+            "Could you please provide your full name to get registered?",
+        ),
+      ],
+    };
+  } catch (error) {
+    console.error("Error in registerPatientNode:", error);
+    return {
+      messages: [new AIMessage("Something went wrong with registration.")],
+    };
   }
 }
 
-  // Fallback: If no tool ran and it generated text responses instead
-  if (response.text) {
-    newMessages.push(new AIMessage(response.text));
-  }
+// --- Node 3: Analyze Intent (Perfect As-is) ---
+export async function analyzeIntentNode(state: AppointmentAgentStateType) {
+  try {
+    const historyText = state.messages
+      .slice(-4)
+      .map((m) => `${m._getType?.() || "user"}: ${m.content}`)
+      .join("\n");
+    const prompt = `Analyze the user conversation history and identify their primary intent.
+Return exactly one classification token: "book", "cancel", "reschedule", or "query".
 
-  return {
-    messages: newMessages,
-  };
+History:
+${historyText}`;
+
+    const modelConfig = await llmConfig(state.doctor);
+    const response = await generateText({
+      model: modelConfig.m,
+      prompt,
+      output: Output.object({
+        schema: z.object({
+          intent: z.enum(["book", "cancel", "reschedule", "query"]),
+        }),
+      }),
+    });
+
+    return { appointmentIntent: response.output.intent };
+  } catch (error) {
+    console.error("Error in analyzeIntentNode:", error);
+    return { appointmentIntent: "query" as const };
+  }
+}
+
+// --- Node 4: Book Appointment (Fixed multi-step tool sequence requirement) ---
+export async function bookAppointmentNode(state: AppointmentAgentStateType) {
+  try {
+    const historyText = state.messages
+      .slice(-4)
+      .map((m) => `${m._getType?.() || "user"}: ${m.content}`)
+      .join("\n");
+    const prompt = `Help the patient book an appointment.
+Step 1: Call "checkAvailability" first to see if the requested date/time slot is open.
+Step 2: If available, call "bookAppointment" to commit the record.
+
+Patient ID Context: ${state.patientId}
+History:
+${historyText}`;
+
+    const modelConfig = await llmConfig(state.doctor);
+    const response = await generateText({
+      model: modelConfig.m, // Valid CoreLM instance
+      prompt,
+      tools: {
+        checkAvailability: modelConfig.tools.checkAvailability,
+        bookAppointment: modelConfig.tools.bookAppointment,
+      }, // Your combined dbTools and calendarTools
+      stopWhen: isStepCount(5),
+      system: getSystemPrompt(),
+    });
+
+    return {
+      messages: [
+        new AIMessage(response.text || "Appointment booked successfully."),
+      ],
+    };
+  } catch (error) {
+    console.error("Error in bookAppointmentNode:", error);
+    return {
+      messages: [
+        new AIMessage("Sorry, I ran into an error booking your appointment."),
+      ],
+    };
+  }
+}
+
+// Ensure cancel, reschedule, and query nodes also receive `maxSteps: 3` properties inside their `generateText` execution parameters
+// --- Node 5: Cancel Appointment ---
+export async function cancelAppointmentNode(state: AppointmentAgentStateType) {
+    try {
+    const historyText = state.messages
+      .slice(-4)
+      .map((m) => `${m._getType?.() || "user"}: ${m.content}`)
+      .join("\n");
+    const modelConfig = await llmConfig(state.doctor);
+    const prompt = `The user wants to cancel an appointment. Use the "cancelAppointment" tool with their appointment configuration. converstional history: ${historyText}`;
+
+    const response = await generateText({
+      model: modelConfig.m,
+      prompt,
+      tools: {
+        cancelAppointment: modelConfig.tools.cancelAppointment,
+      },
+      stopWhen: isStepCount(3),
+    });
+
+    return {
+      messages: [new AIMessage(response.text || "Processing cancellation.")],
+    };
+  } catch (error) {
+    console.error("Error in cancelAppointmentNode:", error);
+    return {
+      messages: [
+        new AIMessage("Could not complete cancellation at this time."),
+      ],
+    };
+  }
+}
+
+// --- Node 6: Reschedule Appointment ---
+export async function rescheduleAppointmentNode(
+  state: AppointmentAgentStateType,
+) {
+  try {
+    const historyText = state.messages
+      .slice(-4)
+      .map((m) => `${m._getType?.() || "user"}: ${m.content}`)
+      .join("\n");
+    const modelConfig = await llmConfig(state.doctor);
+    const prompt = `The user wants to reschedule. Use "checkAvailability" to verify the new slot, then use "updateAppointment" to change it. conversational history: ${historyText}`;
+
+    const response = await generateText({
+      model: modelConfig.m,
+      prompt,
+      tools: {
+        checkAvailability: modelConfig.tools.checkAvailability,
+        updateAppointment: modelConfig.tools.updateAppointment,
+      },
+      stopWhen: isStepCount(3),
+    });
+
+    return {
+      messages: [
+        new AIMessage(response.text || "Processing rescheduling request."),
+      ],
+    };
+  } catch (error) {
+    console.error("Error in rescheduleAppointmentNode:", error);
+    return {
+      messages: [new AIMessage("Could not complete rescheduling process.")],
+    };
+  }
+}
+
+// --- Node 7: Query Appointments ---
+export async function queryAppointmentNode(state: AppointmentAgentStateType) {
+  try {
+    const historyText = state.messages
+      .slice(-4)
+      .map((m) => `${m._getType?.() || "user"}: ${m.content}`)
+      .join("\n");
+    const modelConfig = await llmConfig(state.doctor);
+    const prompt = `The user is querying their schedule. Use the "getPatientAppointments" tool to check status for patientId: ${state.patientId} converstional history: ${historyText}`;
+
+    const response = await generateText({
+      model: modelConfig.m,
+      prompt,
+      tools:{ getPatientAppointments: modelConfig.tools.getPatientAppointments },
+      stopWhen: isStepCount(3),
+    });
+
+    return {
+      messages: [
+        new AIMessage(response.text || "Fetching your appointment info."),
+      ],
+    };
+  } catch (error) {
+    console.error("Error in queryAppointmentNode:", error);
+    return {
+      messages: [
+        new AIMessage("Could not look up your appointments right now."),
+      ],
+    };
+  }
 }

@@ -30,14 +30,14 @@ const addOneHour = (time: string): string => {
 interface CreateAppointmentInput {
   doctorId: Types.ObjectId;
   patientId: Types.ObjectId;
-
   date: Date;
   startTime: string;
+  endTime?: string;
   reason: string;
-
   googleEventId?: string;
   googleHangoutLink?: string;
 }
+
 export const createAppointment = async ({
   doctorId,
   googleEventId,
@@ -46,14 +46,14 @@ export const createAppointment = async ({
   reason,
   date,
   startTime,
+  endTime,
 }: CreateAppointmentInput): Promise<AppointmentDocument> => {
   try {
     if (!doctorId || !patientId || !date || !startTime) {
       throw new Error("doctorId, patientId, date and startTime are required.");
     }
 
-    const endTime = addOneHour(startTime);
-
+    const appointmentEndTime = endTime ?? addOneHour(startTime);
     const { startOfDay, endOfDay } = getDayRange(date);
 
     const conflict = await Appointment.findOne({
@@ -65,7 +65,7 @@ export const createAppointment = async ({
       status: {
         $ne: "cancelled",
       },
-      startTime: { $lt: endTime },
+      startTime: { $lt: appointmentEndTime },
       endTime: { $gt: startTime },
     });
 
@@ -78,14 +78,17 @@ export const createAppointment = async ({
       patientId,
       date,
       startTime,
-      endTime,
+      endTime: appointmentEndTime,
       reason,
+      googleEventId,
+      googleHangoutLink,
       status: "confirmed",
     });
   } catch (error) {
     throw new Error(`Failed to create appointment: ${getErrorMessage(error)}`);
   }
 };
+
 export const getAppointmentById = async (
   appointmentId: string,
 ): Promise<AppointmentDocument> => {
@@ -216,5 +219,3 @@ export const getBookedAppointmentsForDoctor = async (
     );
   }
 };
-
-// createAppointment, getAppointmentById, getAppointmentsByDoctor, getAppointmentsByPatient, updateAppointmentStatus, confirmAppointment, cancelAppointment, completeAppointment, getBookedAppointmentsForDoctor
