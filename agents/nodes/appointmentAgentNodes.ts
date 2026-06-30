@@ -159,12 +159,14 @@ export async function cancelAppointmentNode(state: AppointmentAgentStateType) {
       .map((m) => `${m._getType?.() || "user"}: ${m.content}`)
       .join("\n");
     const modelConfig = await llmConfig(state.doctor);
-    const prompt = `The user wants to cancel an appointment. Use the "cancelAppointment" tool with their appointment configuration. converstional history: ${historyText}`;
+    const prompt = `The user wants to cancel an appointment. Use the  
+    "getPatientAppointments" for getting appointment id use ${state.patientId} and "cancelAppointment" tool with their appointment configuration. converstional history: ${historyText}`;
 
     const response = await generateText({
       model: modelConfig.m,
       prompt,
       tools: {
+        getPatientAppointments: modelConfig.tools.getPatientAppointments,
         cancelAppointment: modelConfig.tools.cancelAppointment,
       },
       stopWhen: isStepCount(3),
