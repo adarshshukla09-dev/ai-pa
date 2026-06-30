@@ -66,12 +66,16 @@ async function findMongoConflict(doctorId: Types.ObjectId, startDate: Date, endD
   return Appointment.findOne(query).lean();
 }
 
-// Wrapper to eliminate try/catch repetition
+// Fixed Wrapper to match the updated envelope blueprint (Point 11)
 export const withErrorHandler = (fn: (input: any) => Promise<any>) => async (input: any) => {
   try {
     return await fn(input);
   } catch (err: any) {
-    return { success: false, available: false, error: err.message, alternatives: [] };
+    return { 
+      success: false, 
+      data: null, 
+      error: err.message || "An unexpected error occurred processing the calendar tool." 
+    };
   }
 };
 
@@ -99,7 +103,15 @@ export function createCalendarTools(doctor: DoctorDocument) {
         if (!includeCancelled) query.status = { $ne: "cancelled" };
 
         const appointments = await Appointment.find(query).sort({ date: 1, startTime: 1 }).lean();
-        return { success: true, source: "mongodb", count: appointments.length, appointments: appointments.map(normalizeAppointment) };
+        return { 
+          success: true, 
+          data: {
+            source: "mongodb", 
+            count: appointments.length, 
+            appointments: appointments.map(normalizeAppointment) 
+          },
+          error: null 
+        };
       }),
     }),
 
@@ -131,15 +143,23 @@ export function createCalendarTools(doctor: DoctorDocument) {
 
         if (mongoConflict || calConflict) {
           return {
-            available: false,
-            source: "mongodb+calendar",
-            reason: "This slot is already booked.",
-            mongoConflict: mongoConflict ? normalizeAppointment(mongoConflict) : undefined,
-            calendarConflictId: calConflict?.id,
-            alternatives: [],
+            success: true, // Tool executed cleanly but slot is occupied
+            data: {
+              available: false,
+              source: "mongodb+calendar",
+              reason: "This slot is already booked.",
+              mongoConflict: mongoConflict ? normalizeAppointment(mongoConflict) : undefined,
+              calendarConflictId: calConflict?.id,
+            },
+            error: null
           };
         }
-        return { available: true, source: "mongodb+calendar", alternatives: [] };
+        
+        return { 
+          success: true, 
+          data: { available: true, source: "mongodb+calendar" }, 
+          error: null 
+        };
       }),
     }),
 
@@ -153,7 +173,11 @@ export function createCalendarTools(doctor: DoctorDocument) {
 
         const mongoConflict = await findMongoConflict(doctor._id, startDate, endDate);
         if (mongoConflict) {
-          return { success: false, error: "Slot already booked in MongoDB.", appointment: normalizeAppointment(mongoConflict) };
+          return { 
+            success: false, 
+            data: { appointment: normalizeAppointment(mongoConflict) }, 
+            error: "Slot already booked in MongoDB." 
+          };
         }
 
         let createdEventId: string | undefined;
@@ -184,7 +208,11 @@ export function createCalendarTools(doctor: DoctorDocument) {
             googleHangoutLink: calRes.data.hangoutLink ?? undefined,
           });
 
-          return { success: true, source: "mongodb+calendar", appointment: normalizeAppointment(appointment) };
+          return { 
+            success: true, 
+            data: { source: "mongodb+calendar", appointment: normalizeAppointment(appointment) }, 
+            error: null 
+          };
         } catch (err) {
           if (createdEventId) await calendarClient.events.delete({ calendarId, eventId: createdEventId }).catch(() => null);
           throw err;
@@ -210,7 +238,11 @@ export function createCalendarTools(doctor: DoctorDocument) {
         const endDate = new Date(end.dateTime);
         const mongoConflict = await findMongoConflict(doctor._id, startDate, endDate, appointmentId);
         if (mongoConflict) {
-          return { success: false, error: "New slot is already booked.", appointment: normalizeAppointment(mongoConflict) };
+          return { 
+            success: false, 
+            data: { appointment: normalizeAppointment(mongoConflict) }, 
+            error: "New slot is already booked." 
+          };
         }
 
         const oldEvent = await calendarClient.events.get({ calendarId, eventId: appointment.googleEventId });
@@ -231,7 +263,11 @@ export function createCalendarTools(doctor: DoctorDocument) {
           throw mongoError;
         }
 
-        return { success: true, source: "mongodb+calendar", appointment: normalizeAppointment(appointment) };
+        return { 
+          success: true, 
+          data: { source: "mongodb+calendar", appointment: normalizeAppointment(appointment) }, 
+          error: null 
+        };
       }),
     }),
 
@@ -248,7 +284,15 @@ export function createCalendarTools(doctor: DoctorDocument) {
         appointment.status = "cancelled";
         await appointment.save();
 
-        return { success: true, source: "mongodb+calendar", appointment: normalizeAppointment(appointment), message: "Cancelled successfully." };
+        return { 
+          success: true, 
+          data: { 
+            source: "mongodb+calendar", 
+            appointment: normalizeAppointment(appointment), 
+            message: "Cancelled successfully." 
+          }, 
+          error: null 
+        };
       }),
     }),
   });

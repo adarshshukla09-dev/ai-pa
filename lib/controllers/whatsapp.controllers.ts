@@ -6,7 +6,7 @@ import { appointmentAgent } from '../../agents/graphs/appointmentAgentGraph';
 import { HumanMessage } from '@langchain/core/messages';
 import type { AppointmentAgentStateType } from '../../agents/state/appointmentAgentState';
 import type { DoctorEngineStateType } from '../../agents/state/doctorEngineState'; // 👈 Import doctor state type
-import { doctorAgent } from '../../agents/graphs/doctorEngineAgentGraph';
+// import { doctorAgent } from '../../agents/graphs/doctorEngineAgentGraph';
 
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'my_super_secret_handshake_123';
 
@@ -44,28 +44,28 @@ export const handleWebhookNotification = async (req: Request, res: Response) => 
 
     let botReply = "Thank you for reaching out. We are processing your request.";
 
-    if (matchingDoctor) {
-      // --- 👨‍⚕️ ROUTE TO DOCTOR AGENT ---
-      console.log(`⚡ Routing incoming message from Doctor: ${matchingDoctor.name}`);
+    // if (matchingDoctor) {
+    //   // --- 👨‍⚕️ ROUTE TO DOCTOR AGENT ---
+    //   console.log(`⚡ Routing incoming message from Doctor: ${matchingDoctor.name}`);
 
-      // Threads for doctors can simply be their own phone number or a specific global directive ID
-      const doctorThreadId = `doctor_${senderPhoneNumber}`;
+    //   // Threads for doctors can simply be their own phone number or a specific global directive ID
+    //   const doctorThreadId = `doctor_${senderPhoneNumber}`;
 
-      const response = await doctorAgent.invoke({
-        doctor: matchingDoctor,
-        doctorPhoneNumber: senderPhoneNumber,
-        messages: [new HumanMessage(incomingText)],
-        // targetPatientId, targetPatientPhone, and pendingInstruction will initialize naturally or via graph nodes
-      }, {
-        configurable: { thread_id: doctorThreadId }
-      }) as DoctorEngineStateType;
+    //   const response = await doctorAgent.invoke({
+    //     doctor: matchingDoctor,
+    //     doctorPhoneNumber: senderPhoneNumber,
+    //     messages: [new HumanMessage(incomingText)],
+    //     // targetPatientId, targetPatientPhone, and pendingInstruction will initialize naturally or via graph nodes
+    //   }, {
+    //     configurable: { thread_id: doctorThreadId }
+    //   }) as DoctorEngineStateType;
 
-      const lastGraphMessage = response.messages[response.messages.length - 1];
-      if (lastGraphMessage) {
-        botReply = lastGraphMessage.content.toString();
-      }
+    //   const lastGraphMessage = response.messages[response.messages.length - 1];
+    //   if (lastGraphMessage) {
+    //     botReply = lastGraphMessage.content.toString();
+    //   }
 
-    } else {
+    // } else {
       // --- 👤 ROUTE TO PATIENT AGENT ---
       console.log(`⚡ Routing incoming message from Patient: ${senderPhoneNumber}`);
 
@@ -92,7 +92,7 @@ export const handleWebhookNotification = async (req: Request, res: Response) => 
       if (lastGraphMessage) {
         botReply = lastGraphMessage.content.toString();
       }
-    }
+    // }
 
     // 2. Dispatch reply back to the respective sender via WhatsApp
     await WhatsAppService.sendTextMessage(senderPhoneNumber, botReply);

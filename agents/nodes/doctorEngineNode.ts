@@ -7,7 +7,8 @@ import z from "zod";
 
 /**
  * NODE 1: Extract Intent
- * Extracts WHAT the doctor wants to do (e.g., block, duration) immediately.
+ * Structured extraction reflecting the cleaner separation of Action configurations 
+ * vs Booking Intent payloads.
  */
 export const extractInstructionIntent = async (state: DoctorEngineStateType) => {
   try {
@@ -15,32 +16,50 @@ export const extractInstructionIntent = async (state: DoctorEngineStateType) => 
     if (!lastMessage) return {};
 
     const modelConfig = await llmConfig(state.doctor);
-    
+
     const extractionSchema = z.object({
-      instructionType: z.enum(["block", "force_schedule", "override"]),
-      blockUntil: z.string().optional().describe("ISO date-time string if placing a block rule."),
-      forcedAppointmentTime: z.string().optional().describe("ISO date-time string if forcing a specific time rule."),
+      pendingInstruction: z.object({
+        action: z.enum(["block_patient", "book_appointment", "override_rule"]),
+        reason: z.string().optional().describe("Reason for system constraint or visit objective."),
+        blockUntil: z.string().optional().describe("ISO timestamp if action is block_patient"),
+      }),
+      bookingIntent: z.object({
+        start: z.string().optional().describe("ISO timestamp for booking start."),
+        end: z.string().optional().describe("ISO timestamp for booking end. (If omitted but start is found, default to start + 1hr)"),
+        purpose: z.string().optional().describe("Purpose of visit"),
+      }).optional()
     });
 
     const response = await generateText({
-      model: modelConfig.model,
-      system: `Analyze the instruction text from the doctor. Map relative dates/durations (like 'until 2 days') accurately using the server system time reference: ${new Date().toISOString()}`,
-      prompt: `Extract routing metrics for this directive: "${lastMessage}"`,
+      model: modelConfig.m,
+      system: `Analyze doctor configuration inputs. Map durations cleanly using system baseline: ${new Date().toISOString()}`,
+      prompt: `Extract structured details from: "${lastMessage}"`,
       output: Output.object({ schema: extractionSchema }),
     });
 
+    const output = response.output;
+
+    // Default calculations if a book action is missing absolute end times
+    if (output.pendingInstruction.action === "book_appointment" && output.bookingIntent?.start) {
+      if (!output.bookingIntent.end) {
+        const startSecs = Date.parse(output.bookingIntent.start);
+        output.bookingIntent.end = new Date(startSecs + 60 * 60 * 1000).toISOString();
+      }
+    }
+
     return {
-      pendingInstruction: response.output,
+      pendingInstruction: output.pendingInstruction,
+      bookingIntent: output.bookingIntent || {}
     };
   } catch (error) {
-    console.error("❌ Error extracting intent in node 1:", error);
+    console.error("❌ Error in extractInstructionIntent node:", error);
     return {};
   }
 };
 
 /**
  * NODE 2: Resolve Target Patient
- * Uses the lookup tool to bind the rule to an actual patient profile.
+ * Persists name data, preserving structural data properties cleanly.
  */
 export const resolveTargetPatient = async (state: DoctorEngineStateType) => {
   try {
@@ -48,126 +67,86 @@ export const resolveTargetPatient = async (state: DoctorEngineStateType) => {
     if (!originalMessage) return {};
 
     const modelConfig = await llmConfig(state.doctor);
-
     const response = await generateText({
-      model: modelConfig.model,
-      system: `You are a clinic assistant. Look up the patient mentioned in this text using 'findPatientByNameOrPhone'. 
-      If the doctor explicitly requests to book an appointment, use the 'bookAppointment' tool as well. 
-      Pass raw names directly to the tool.`,
-      prompt: `Doctor instruction: "${originalMessage}"`,
-      tools: modelConfig.tools, // Ensure bookAppointment is inside this list
-      stopWhen: isStepCount(5),
+      model: modelConfig.m,
+      system: "Identify target profile via findPatientByNameOrPhone.",
+      prompt: `Identify patient references inside: "${originalMessage}"`,
+      tools: { findPatientByNameOrPhone: modelConfig.tools.findPatientByNameOrPhone },
+      stopWhen: isStepCount(3),
     });
 
-    let targetPatientId: string | undefined = undefined;
-    let targetPatientPhone: string | undefined = undefined;
-    let appointmentBookedSuccess = false;
-    let appointmentDetails = null;
+    let targetPatientId: string | undefined;
+    let targetPatientPhone: string | undefined;
+    let targetPatientName: string | undefined;
 
-    // Iterate over tool execution steps
     for (const step of response.steps) {
       for (const result of step.toolResults ?? []) {
-        
-        // 1. Handle Patient Lookup
         if (result.toolName === "findPatientByNameOrPhone") {
-          const output = result.output as { success: boolean; patients?: any[]; message?: string };
-
-          if (output.success && output.patients?.length === 1) {
-            const matchedPatient = output.patients[0];
-            targetPatientId = matchedPatient.id;
-            targetPatientPhone = matchedPatient.phoneNumber;
-          } 
+          const resEnvelope = result.output as { success: boolean; data: any; error: string | null };
           
-          if (output.success && output.patients && output.patients.length > 1) {
-            const namesList = output.patients.map((p) => p.name).join(", ");
+          if (resEnvelope.success && resEnvelope.data?.patients?.length === 1) {
+            const match = resEnvelope.data.patients[0];
+            targetPatientId = match.id;
+            targetPatientPhone = match.phoneNumber;
+            targetPatientName = match.name; // Preserving context for future steps
+          } else if (resEnvelope.success && resEnvelope.data?.patients?.length > 1) {
+            const options = resEnvelope.data.patients.map((p: any) => p.name).join(", ");
             return {
-              messages: [
-                new AIMessage(`I found multiple matching records: (${namesList}). Could you reply with the exact full name or phone number?`),
-              ],
+              messages: [new AIMessage(`Multiple records matched (${options}). Which patient do you mean?`)],
             };
-          }
-        }
-
-        // 2. Handle Appointment Booking Tool Result
-        if (result.toolName === "bookAppointment") {
-          const output = result.output as { success: boolean; appointment?: any; error?: string };
-          if (output.success) {
-            appointmentBookedSuccess = true;
-            appointmentDetails = output.appointment;
           }
         }
       }
     }
 
-    // If no patient was found globally
     if (!targetPatientPhone) {
       return {
-        messages: [
-          new AIMessage(response.text || "I couldn't identify that patient record. Could you please specify their full name or phone number?"),
-        ],
+        messages: [new AIMessage("I couldn't identify that patient record. Could you please clarify with their full name or phone number?")],
       };
     }
 
-    // Return the state updates, passing down booking variables if any
-    return {
-      targetPatientId,
-      targetPatientPhone,
-      appointmentBooked: appointmentBookedSuccess,
-      appointmentDetails: appointmentDetails
-    };
-
+    return { targetPatientId, targetPatientPhone, targetPatientName };
   } catch (error) {
-    console.error("❌ Error matching patient and booking in resolve node:", error);
+    console.error("❌ Error in resolveTargetPatient node:", error);
     return {};
   }
 };
 
 /**
- * NODE 3: Persist Rule
- * Writes finalized rules into the database once the target patient is resolved.
+ * NODE 3: Save Rules Architecture
  */
 export const saveDoctorInstruction = async (state: DoctorEngineStateType) => {
   try {
-    // Read appointment variables injected from Node 2 state
-    const { doctorPhoneNumber, targetPatientPhone, pendingInstruction, messages, appointmentBooked } = state as any;
-    const originalText = messages.find((m:any)=> m._getType() === "human")?.content || "";
+    const { doctorPhoneNumber, targetPatientPhone, targetPatientName, pendingInstruction, messages } = state;
+    const rawText = messages.find((m) => m._getType() === "human")?.content || "";
 
-    if (!targetPatientPhone || !pendingInstruction?.instructionType) return {};
+    if (!targetPatientPhone || !pendingInstruction?.action) return {};
 
-    // Persist your blocking rule restrictions
+    // Map legacy schema to matches cleanly
     await DrInstruction.findOneAndUpdate(
       {
         doctorPhoneNumber,
         patientPhoneNumber: targetPatientPhone,
-        instructionType: pendingInstruction.instructionType,
+        instructionType: pendingInstruction.action === "block_patient" ? "block" : "override",
         isActive: true,
       },
       {
         metaData: {
           blockUntil: pendingInstruction.blockUntil ? new Date(pendingInstruction.blockUntil) : undefined,
-          forcedAppointmentTime: pendingInstruction.forcedAppointmentTime ? new Date(pendingInstruction.forcedAppointmentTime) : undefined,
         },
-        rawInstruction: originalText,
+        rawInstruction: rawText,
       },
       { upsert: true }
     );
 
-    // Build compound response message
-    let successConfirmation = `Understood. System constraints updated successfully.`;
-    if (pendingInstruction.instructionType === "block") {
-      successConfirmation = `Confirmed: Patient profile (${targetPatientPhone}) has been placed on a rest period until ${pendingInstruction.blockUntil}.`;
+    let confirmation = `System update completed: Parameters saved for ${targetPatientName || "the patient"}.`;
+    if (pendingInstruction.action === "block_patient") {
+      confirmation = `Confirmed: Profile for ${targetPatientName || targetPatientPhone} has been put on a rest period until ${pendingInstruction.blockUntil}.`;
     }
 
-    // Append appointment booking notes if the tool was fired
-    if (appointmentBooked) {
-      successConfirmation += ` Additionally, I have successfully booked their appointment on your calendar as requested.`;
-    }
-
-    return {
-      messages: [new AIMessage(successConfirmation)],
-    };
+    return { messages: [new AIMessage(confirmation)] };
   } catch (error) {
-    console.error("❌ Error updating drInstruction database record:", error);
+    console.error("❌ Error running saveDoctorInstruction node:", error);
     return {};
   }
 };

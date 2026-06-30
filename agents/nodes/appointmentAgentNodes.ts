@@ -159,14 +159,23 @@ export async function cancelAppointmentNode(state: AppointmentAgentStateType) {
       .map((m) => `${m._getType?.() || "user"}: ${m.content}`)
       .join("\n");
     const modelConfig = await llmConfig(state.doctor);
-    const prompt = `The user wants to cancel an appointment. Use the "cancelAppointment" tool with their appointment configuration. converstional history: ${historyText}`;
+    const prompt = `Cancel appointment workflow:
+
+* Always call "getPatientAppointments" first use ${state.patientId}.
+* Identify the appointment from DB results.
+* If one match, call "cancelAppointment".
+* If multiple, clarify using only date/time.
+* Never request or expose internal IDs.
+* Confirm only on successful cancellation.
+ converstional history: ${historyText}`;
 
     const response = await generateText({
       model: modelConfig.m,
       prompt,
-      tools: {
-        cancelAppointment: modelConfig.tools.cancelAppointment,
-      },
+       tools: {
+    getPatientAppointments: modelConfig.tools.getPatientAppointments,
+    cancelAppointment: modelConfig.tools.cancelAppointment,
+  },
       stopWhen: isStepCount(3),
     });
 
@@ -193,12 +202,13 @@ export async function rescheduleAppointmentNode(
       .map((m) => `${m._getType?.() || "user"}: ${m.content}`)
       .join("\n");
     const modelConfig = await llmConfig(state.doctor);
-    const prompt = `The user wants to reschedule. Use "checkAvailability" to verify the new slot, then use "updateAppointment" to change it. conversational history: ${historyText}`;
+    const prompt = `The user wants to reschedule. Use "checkAvailability" to verify the new slot, then use "updateAppointment" to change it also consider patientid as ${state.patientId} . conversational history: ${historyText}`;
 
     const response = await generateText({
       model: modelConfig.m,
       prompt,
       tools: {
+        getPatientAppointments: modelConfig.tools.getPatientAppointments,
         checkAvailability: modelConfig.tools.checkAvailability,
         updateAppointment: modelConfig.tools.updateAppointment,
       },

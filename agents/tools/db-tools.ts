@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import z from "zod";
 import { Patient } from "../../lib/db/models/patient.model";
-import { createPatient, updatePatient } from "../../lib/controllers/patient.controllers";
+import { createPatient, getPatientByPhoneNumber, updatePatient } from "../../lib/controllers/patient.controllers";
 
 const patientSchema = z.object({
   name: z.string().describe("Patient full name."),
@@ -42,7 +42,27 @@ export const dbTools = () => {
         };
       },
     }),
-
+    getPatientByPhoneNumber: tool({
+      description: "Get a patient profile by phone number in MongoDB.",
+      inputSchema: z.object({
+        phoneNumber: z.string().describe("Patient phone number."),
+      }),
+      execute: async ({ phoneNumber }) => {
+        const patient = await getPatientByPhoneNumber(phoneNumber);
+        if (!patient) {
+          return { success: false, message: "Patient not found." };
+        }
+        return {
+          success: true,
+          source: "mongodb",
+          patient: {
+            id: patient._id.toString(),
+            name: patient.name,
+            phoneNumber: patient.phoneNumber,
+          },
+        };
+      },
+    }),
     createPatient: tool({
       description: "Create a patient profile in MongoDB.",
       inputSchema: patientSchema,

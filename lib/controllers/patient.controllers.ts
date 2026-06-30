@@ -11,12 +11,12 @@ export const getAllPatients = async () => {
     }
 };
 
-export const getPatientById = async (patientId: string) => {
+export const getPatientByPhoneNumber = async (phone: string) => {
     try {
-        if (!patientId) {
+        if (!phone) {
             throw new Error("Patient ID is required");
         }
-        const patient = await Patient.findById(patientId);
+        const patient = await Patient.findOne({ phoneNumber: phone });
         return patient;
     } catch (error) {
         console.error("Error fetching patient by ID:", error);

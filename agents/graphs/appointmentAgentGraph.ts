@@ -20,6 +20,8 @@ import {
 } from "../nodes/appointmentAgentNodes";
 import { nativeMongoClient } from "../../lib/db/mongo.config";
 
+// --- Conditional Routers ---
+
 function routeAfterVerify(state: AppointmentAgentStateType) {
   if (state.patientStatus === "KNOWN") {
     return "analyzeIntentNode";
@@ -35,14 +37,22 @@ function routeAfterRegistration(state: AppointmentAgentStateType) {
 }
 
 function routeAfterIntentAnalysis(state: AppointmentAgentStateType) {
-  switch (state.appointmentIntent) {
-    case "book": return "bookAppointmentNode";
-    case "cancel": return "cancelAppointmentNode";
-    case "reschedule": return "rescheduleAppointmentNode";
+  // Point 7: Updated from 'appointmentIntent' to the standardized 'action' property
+  // Fixed: Resolved dangling 'state.' code block typo
+  switch (state.action) {
+    case "book": 
+      return "bookAppointmentNode";
+    case "cancel": 
+      return "cancelAppointmentNode";
+    case "reschedule": 
+      return "rescheduleAppointmentNode";
     case "query":
-    default: return "queryAppointmentNode";
+    default: 
+      return "queryAppointmentNode";
   }
 }
+
+// --- Workflow Graph Definition ---
 
 const workflow = new StateGraph(AppointmentAgentState)
   .addNode("verifyPatientNode", verifyPatientNode)
@@ -53,8 +63,10 @@ const workflow = new StateGraph(AppointmentAgentState)
   .addNode("rescheduleAppointmentNode", rescheduleAppointmentNode)
   .addNode("queryAppointmentNode", queryAppointmentNode)
 
+  // Entry Point
   .addEdge(START, "verifyPatientNode")
 
+  // Conditional Edge Layouts
   .addConditionalEdges(
     "verifyPatientNode",
     routeAfterVerify,
@@ -84,11 +96,15 @@ const workflow = new StateGraph(AppointmentAgentState)
     }
   )
 
+  // Terminal Edges
   .addEdge("bookAppointmentNode", END)
   .addEdge("cancelAppointmentNode", END)
   .addEdge("rescheduleAppointmentNode", END)
   .addEdge("queryAppointmentNode", END);
+
 export let appointmentAgent: CompiledStateGraph<any, any, any>;
+
+// --- Persistence initialization ---
 
 export async function initAppointmentAgent() {
   if (
