@@ -13,35 +13,57 @@ const patientSchema = z.object({
 
 export const dbTools = () => {
   return Object.freeze({
-    findPatientByNameOrPhone: tool({
-      description: "Find patient profiles by name or phone number in MongoDB.",
-      inputSchema: z.object({
-        searchString: z.string().describe("Name or phone number to search."),
-      }),
-      execute: async ({ searchString }) => {
-        const cleanedQuery = searchString.replace(/^(mr|ms|mrs|dr)\.?\s+/i, "").trim();
-        const patients = await Patient.find({
-          $or: [
-            { name: { $regex: cleanedQuery, $options: "i" } },
-            { phoneNumber: cleanedQuery },
-          ],
-        }).limit(3).lean();
+   findPatientByNameOrPhone: tool({
+  description: "Find patient profiles by name, phone number, or a general search string in MongoDB.",
+  inputSchema: z.object({
+    name: z.string().optional().nullable().describe("The isolated patient name if found (e.g. 'Anurag Shukla')."),
+    phoneNumber: z.string().optional().nullable().describe("The isolated patient phone number string if found (e.g. '1111111111')."),
+    searchString: z.string().optional().nullable().describe("A general fallback search query containing name or phone."),
+  }),
+  execute: async ({ name, phoneNumber, searchString }) => {
+    const queryConditions: any[] = [];
 
-        if (patients.length === 0) {
-          return { success: false, message: "No patients found." };
-        }
+    // If the LLM isolated a phone number, clean it and search
+    if (phoneNumber) {
+      const cleanPhone = phoneNumber.replace(/\D/g, ""); // Strip non-digits if necessary
+      queryConditions.push({ phoneNumber: cleanPhone });
+    }
 
-        return {
-          success: true,
-          source: "mongodb",
-          patients: patients.map((patient) => ({
-            id: patient._id.toString(),
-            name: patient.name,
-            phoneNumber: patient.phoneNumber,
-          })),
-        };
-      },
-    }),
+    // If the LLM isolated a name, apply regex
+    if (name) {
+      const cleanedName = name.replace(/^(mr|ms|mrs|dr)\.?\s+/i, "").trim();
+      queryConditions.push({ name: { $regex: cleanedName, $options: "i" } });
+    }
+
+    // Fallback if the LLM put everything into searchString
+    if (searchString && !name && !phoneNumber) {
+      const cleanedQuery = searchString.replace(/^(mr|ms|mrs|dr)\.?\s+/i, "").trim();
+      queryConditions.push({ name: { $regex: cleanedQuery, $options: "i" } });
+      queryConditions.push({ phoneNumber: cleanedQuery });
+    }
+
+    // If nothing was provided, return empty
+    if (queryConditions.length === 0) {
+      return { success: false, message: "No search criteria provided." };
+    }
+
+    const patients = await Patient.find({ $or: queryConditions }).limit(3).lean();
+
+    if (patients.length === 0) {
+      return { success: false, message: "No patients found." };
+    }
+
+    return {
+      success: true,
+      source: "mongodb",
+      patients: patients.map((patient) => ({
+        id: patient._id.toString(),
+        name: patient.name,
+        phoneNumber: patient.phoneNumber,
+      })),
+    };
+  },
+}),
     getPatientByPhoneNumber: tool({
       description: "Get a patient profile by phone number in MongoDB.",
       inputSchema: z.object({

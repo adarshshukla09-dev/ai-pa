@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 import { handleWebhookNotification, verifyWebhook } from './lib/controllers/whatsapp.controllers';
 import { connectDB } from './lib/db/mongo.config';
 import { initAppointmentAgent } from './agents/graphs/appointmentAgentGraph';
-import { initDoctorEngine } from './agents/graphs/doctorEngineAgentGraph';
+import { initDoctorAgent } from './agents/graphs/doctorEngineAgentGraph';
 
 dotenv.config();
 
@@ -25,7 +25,7 @@ app.listen(PORT, async () => {
     
     // 2. Safely initialize your LangGraph checkpointer now that nativeMongoClient is loaded
     await initAppointmentAgent();
-    await initDoctorEngine();
+    await initDoctorAgent();
     
   } catch (err) {
     console.error('❌ Initialization failed:', err);

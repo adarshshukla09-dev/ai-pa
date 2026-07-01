@@ -17,7 +17,13 @@ export const DoctorEngineState = Annotation.Root({
 
   // Cleaner Separation of Intent vs Booking Data (Points 1, 10, & 12)
   pendingInstruction: Annotation<{
-    action?: "block_patient" | "book_appointment" | "override_rule";
+    action?: | "block_patient"
+| "book_appointment"
+| "update_appointment"
+| "cancel_appointment"
+| "override_rule"
+| "block_schedule"
+| "update_schedule";
     reason?: string;
     blockUntil?: string; // ISO String
   }>({
@@ -25,7 +31,7 @@ export const DoctorEngineState = Annotation.Root({
     default: () => ({}),
   }),
 
-  bookingIntent: Annotation<{
+AppointmentData: Annotation<{
     start: string; // ISO String
     end: string;   // ISO String
     purpose: string;
@@ -34,7 +40,6 @@ export const DoctorEngineState = Annotation.Root({
     default: () => ({ start: "", end: "", purpose: "" }),
   }),
 
-  // Workflow Determinism States (Points 2 & 12)
   slotAvailable: Annotation<boolean | undefined>(),
   appointmentBooked: Annotation<boolean>({
     reducer: (_, y) => y,

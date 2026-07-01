@@ -120,7 +120,7 @@ export function createCalendarTools(doctor: DoctorDocument) {
       inputSchema: z.object({
         start: z.string(),
         duration: z.number().default(doctor.slotDurationInMinutes ?? 60),
-        appointmentIdToIgnore: z.string().optional(),
+        appointmentIdToIgnore: z.string().optional().nullable(),
       }),
       execute: withErrorHandler(async ({ start, duration, appointmentIdToIgnore }) => {
         const startDate = new Date(start);
